@@ -2,6 +2,15 @@
 name = "ens-savior"
 version = "0.1.0"
 edition = "2024"
+description = "Recover ENS names from a compromised wallet via private Flashbots bundle submission"
+authors = ["0xPenryn"]
+license = "MIT"
+repository = "https://github.com/0xPenryn/ens-savior"
+homepage = "https://github.com/0xPenryn/ens-savior"
+keywords = ["ens", "ethereum", "flashbots", "recovery", "mev"]
+categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
+readme = "README.md"
+rust-version = "1.85"
 
 [dependencies]
 anyhow = "1.0"
