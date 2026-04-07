@@ -18,10 +18,11 @@ use crate::{
         build_and_sign_bundle, bundle_included, estimate_required_funding, needs_eip7702_deauth,
         send_bundle, simulate_bundle, wait_for_funding,
     },
+    constants::{BUILDER_NAMES, ENS_SUBGRAPH_ID},
     ens::{discover_names, plan_name_recoveries, select_names},
     state::{load_or_create_session, parse_signer, persist_completed, resolve_state_path},
     types::{Args, FlashbotsBundle},
-    utils::{gwei_to_wei, hex_to_bytes, wei_to_eth_string},
+    utils::{gwei_to_wei, hex_to_bytes, parse_u128_hex, wei_to_eth_string},
 };
 
 #[tokio::main]
@@ -33,6 +34,16 @@ async fn main() -> Result<()> {
         .context("failed to parse compromised private key")?;
     let destination = alloy::primitives::Address::from_str(&args.destination)
         .with_context(|| format!("invalid destination address: {}", args.destination))?;
+
+    let subgraph_url = match (args.subgraph_url.as_deref(), args.subgraph_api_key.as_deref()) {
+        (Some(url), _) => url.to_owned(),
+        (None, Some(key)) => format!(
+            "https://gateway.thegraph.com/api/{key}/subgraphs/id/{ENS_SUBGRAPH_ID}"
+        ),
+        (None, None) => bail!(
+            "provide --subgraph-url <url> or --subgraph-api-key <key> (get a free key at https://thegraph.com/studio/apikeys/)"
+        ),
+    };
 
     let state_path = resolve_state_path(&args, compromised_signer.address(), destination)?;
     let (session, funding_signer) =
@@ -58,7 +69,7 @@ async fn main() -> Result<()> {
     let mut discovered = discover_names(
         &http,
         &args.rpc_url,
-        &args.subgraph_url,
+        &subgraph_url,
         compromised_signer.address(),
     )
     .await?;
@@ -87,9 +98,12 @@ async fn main() -> Result<()> {
     }
 
     let latest_block = rpc::get_block_by_number(&http, &args.rpc_url, "latest").await?;
-    let base_fee = latest_block
-        .base_fee_per_gas
-        .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?;
+    let base_fee = parse_u128_hex(
+        latest_block
+            .base_fee_per_gas
+            .as_deref()
+            .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?,
+    )?;
     let priority_fee = gwei_to_wei(args.priority_fee_gwei);
     let max_fee_per_gas = base_fee.saturating_mul(2).saturating_add(priority_fee);
 
@@ -140,9 +154,12 @@ async fn main() -> Result<()> {
         }
 
         let block = rpc::get_block_by_number(&http, &args.rpc_url, "latest").await?;
-        let base_fee_now = block
-            .base_fee_per_gas
-            .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?;
+        let base_fee_now = parse_u128_hex(
+            block
+                .base_fee_per_gas
+                .as_deref()
+                .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?,
+        )?;
         let max_fee = base_fee_now.saturating_mul(2).saturating_add(priority_fee);
         let target_block = current_block + 1;
 
@@ -163,7 +180,7 @@ async fn main() -> Result<()> {
 
         simulate_bundle(&http, &args.relay_url, &funding_signer, &txs, target_block).await?;
 
-        send_bundle(&http, &args.relay_url, &funding_signer, &txs, target_block).await?;
+        send_bundle(&http, &args.relay_url, BUILDER_NAMES, &funding_signer, &txs, target_block).await?;
 
         let tx_hashes = txs
             .iter()

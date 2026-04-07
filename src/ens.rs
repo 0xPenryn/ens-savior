@@ -134,9 +134,12 @@ fn node_to_u256(node: [u8; 32]) -> U256 {
 #[derive(Debug, Deserialize)]
 struct SubgraphDomainsResp {
     data: Option<SubgraphData>,
+    #[serde(default)]
+    errors: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SubgraphData {
     #[serde(default)]
     domains: Vec<SubgraphDomain>,
@@ -150,10 +153,8 @@ struct SubgraphDomain {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct WrappedDomain {
     name: Option<String>,
-    domain: Option<SubgraphDomain>,
 }
 
 async fn discover_names_subgraph(
@@ -161,7 +162,7 @@ async fn discover_names_subgraph(
     subgraph_url: &str,
     owner: Address,
 ) -> Result<Vec<String>> {
-    let owner_hex = format!("{owner:?}").to_lowercase();
+    let owner_hex = format!("{owner:#x}");
 
     let query = r#"
         query($owner: String!) {
@@ -170,7 +171,6 @@ async fn discover_names_subgraph(
           }
           wrappedDomains(first: 1000, where: { owner: $owner }) {
             name
-            domain { name }
           }
         }
     "#;
@@ -191,6 +191,10 @@ async fn discover_names_subgraph(
         .json::<SubgraphDomainsResp>()
         .await?;
 
+    if !resp.errors.is_empty() {
+        anyhow::bail!("subgraph returned errors: {}", serde_json::to_string(&resp.errors)?);
+    }
+
     let mut out = BTreeSet::new();
     if let Some(data) = resp.data {
         for domain in data.domains {
@@ -202,11 +206,6 @@ async fn discover_names_subgraph(
         for wrapped in data.wrapped_domains {
             if let Some(name) = wrapped.name {
                 out.insert(name);
-            }
-            if let Some(domain) = wrapped.domain {
-                if let Some(name) = domain.name {
-                    out.insert(name);
-                }
             }
         }
     }

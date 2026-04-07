@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, U256};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{DEFAULT_RELAY, DEFAULT_RPC, DEFAULT_SUBGRAPH};
+use crate::constants::{DEFAULT_RELAY, DEFAULT_RPC};
 
 #[derive(Debug, Parser)]
 #[command(name = "ens-savior")]
@@ -18,8 +18,12 @@ pub struct Args {
     pub rpc_url: String,
     #[arg(long, default_value = DEFAULT_RELAY)]
     pub relay_url: String,
-    #[arg(long, default_value = DEFAULT_SUBGRAPH)]
-    pub subgraph_url: String,
+    /// Full subgraph URL. Mutually exclusive with --subgraph-api-key.
+    #[arg(long, conflicts_with = "subgraph_api_key")]
+    pub subgraph_url: Option<String>,
+    /// The Graph API key; used to build the ENS subgraph URL automatically.
+    #[arg(long, conflicts_with = "subgraph_url")]
+    pub subgraph_api_key: Option<String>,
     #[arg(long)]
     pub state_path: Option<PathBuf>,
     #[arg(long, default_value_t = 3)]
@@ -67,5 +71,5 @@ pub struct FlashbotsBundle {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcBlock {
-    pub base_fee_per_gas: Option<u128>,
+    pub base_fee_per_gas: Option<String>,
 }

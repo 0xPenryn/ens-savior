@@ -1,6 +1,11 @@
 use alloy::primitives::{U256, hex};
 use anyhow::Result;
 
+pub fn parse_u128_hex(v: &str) -> Result<u128> {
+    let stripped = v.strip_prefix("0x").unwrap_or(v);
+    Ok(u128::from_str_radix(stripped, 16)?)
+}
+
 pub fn parse_u64_hex(v: &str) -> Result<u64> {
     let stripped = v.strip_prefix("0x").unwrap_or(v);
     Ok(u64::from_str_radix(stripped, 16)?)

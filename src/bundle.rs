@@ -10,6 +10,7 @@ use alloy::{
 use anyhow::{Context, Result, anyhow, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use reqwest::Client;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
@@ -208,6 +209,25 @@ async fn sign_request_to_hex(wallet: &EthereumWallet, req: TransactionRequest) -
     Ok(format!("0x{}", hex::encode(envelope.encoded_2718())))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SimBundle {
+    total_gas_used: u64,
+    bundle_gas_price: String,
+    results: Vec<SimTx>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SimTx {
+    tx_hash: String,
+    gas_used: u64,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    revert: Option<String>,
+}
+
 pub async fn simulate_bundle(
     http: &Client,
     relay_url: &str,
@@ -215,6 +235,13 @@ pub async fn simulate_bundle(
     txs: &[String],
     target_block: u64,
 ) -> Result<()> {
+    println!("Bundle ({} txs):", txs.len());
+    for (i, raw) in txs.iter().enumerate() {
+        let bytes = hex_to_bytes(raw)?;
+        let hash = keccak256(&bytes);
+        println!("  [{i}] 0x{}", hex::encode(hash));
+    }
+
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -234,12 +261,32 @@ pub async fn simulate_bundle(
         bail!("bundle simulation failed: {}", res);
     }
 
+    if let Some(result) = res.get("result") {
+        match serde_json::from_value::<SimBundle>(result.clone()) {
+            Ok(sim) => {
+                println!(
+                    "Simulation OK — total gas: {}, gas price: {} wei",
+                    sim.total_gas_used, sim.bundle_gas_price
+                );
+                for tx in &sim.results {
+                    if let Some(err) = tx.error.as_deref().or(tx.revert.as_deref()) {
+                        println!("  {} — gas: {} REVERTED: {}", tx.tx_hash, tx.gas_used, err);
+                    } else {
+                        println!("  {} — gas: {}", tx.tx_hash, tx.gas_used);
+                    }
+                }
+            }
+            Err(_) => println!("Simulation OK (could not parse result detail)"),
+        }
+    }
+
     Ok(())
 }
 
 pub async fn send_bundle(
     http: &Client,
     relay_url: &str,
+    builder_names: &[&str],
     funding_signer: &PrivateKeySigner,
     txs: &[String],
     target_block: u64,
@@ -252,6 +299,7 @@ pub async fn send_bundle(
             {
                 "txs": txs,
                 "blockNumber": format!("0x{:x}", target_block),
+                "builders": builder_names,
             }
         ]
     })
@@ -262,7 +310,12 @@ pub async fn send_bundle(
         bail!("bundle send failed: {}", res);
     }
 
-    println!("Bundle submitted for block {}", target_block);
+    println!(
+        "Bundle submitted for block {} via {} (multiplexing to {} builders)",
+        target_block,
+        relay_url,
+        builder_names.len()
+    );
     Ok(())
 }
 
@@ -272,9 +325,12 @@ async fn flashbots_request(
     funding_signer: &PrivateKeySigner,
     body: &str,
 ) -> Result<Value> {
+    // Flashbots requires signing the hex *string* of the body hash (not the raw bytes).
+    // The relay verifies: ecrecover(keccak256("\x19Ethereum Signed Message:\n66" + hash_hex), sig)
     let body_hash = keccak256(body.as_bytes());
+    let body_hash_hex = format!("0x{}", hex::encode(body_hash.as_slice()));
     let signature = funding_signer
-        .sign_message(body_hash.as_slice())
+        .sign_message(body_hash_hex.as_bytes())
         .await
         .context("failed to sign flashbots request")?;
 
