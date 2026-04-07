@@ -1,0 +1,312 @@
+use std::time::Duration;
+
+use alloy::{
+    eips::{eip2718::Encodable2718, eip7702::Authorization},
+    network::{Ethereum, EthereumWallet, NetworkWallet},
+    primitives::{Address, U256, hex, keccak256},
+    rpc::types::TransactionRequest,
+    signers::{Signer, local::PrivateKeySigner},
+};
+use anyhow::{Context, Result, anyhow, bail};
+use dialoguer::{Confirm, theme::ColorfulTheme};
+use reqwest::Client;
+use serde_json::{Value, json};
+
+use crate::{
+    constants::{
+        GAS_BASE_REG_TRANSFER, GAS_DEAUTH, GAS_FUND_TRANSFER, GAS_REGISTRY_SET_OWNER,
+        GAS_WRAPPER_TRANSFER,
+    },
+    contracts, rpc,
+    types::{PlannedNameTx, RecoveryKind},
+    utils::{hex_to_bytes, wei_to_eth_string},
+};
+
+pub fn needs_eip7702_deauth(code: &str) -> bool {
+    let bytes = match hex_to_bytes(code) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    bytes.len() == 23 && bytes.starts_with(&[0xef, 0x01, 0x00])
+}
+
+pub fn estimate_required_funding(
+    planned: &[PlannedNameTx],
+    needs_deauth: bool,
+    max_fee_per_gas: u128,
+    safety_buffer_pct: u64,
+) -> (U256, U256) {
+    let compromised_gas: u64 = planned
+        .iter()
+        .map(|p| match p.kind {
+            RecoveryKind::BaseRegistrar2ld { .. } => GAS_BASE_REG_TRANSFER,
+            RecoveryKind::NameWrapper { .. } => GAS_WRAPPER_TRANSFER,
+            RecoveryKind::RegistryOwner { .. } => GAS_REGISTRY_SET_OWNER,
+        })
+        .sum();
+
+    let compromised_seed = U256::from(compromised_gas)
+        .saturating_mul(U256::from(max_fee_per_gas))
+        .saturating_mul(U256::from(100 + safety_buffer_pct))
+        / U256::from(100u64);
+
+    let funding_gas = GAS_FUND_TRANSFER + if needs_deauth { GAS_DEAUTH } else { 0 };
+    let funding_gas_cost = U256::from(funding_gas)
+        .saturating_mul(U256::from(max_fee_per_gas))
+        .saturating_mul(U256::from(100 + safety_buffer_pct))
+        / U256::from(100u64);
+
+    (funding_gas_cost + compromised_seed, compromised_seed)
+}
+
+pub async fn wait_for_funding(
+    http: &Client,
+    rpc_url: &str,
+    funding: Address,
+    needed: U256,
+) -> Result<()> {
+    println!(
+        "Send at least {} ETH to {}",
+        wei_to_eth_string(needed),
+        funding
+    );
+
+    let proceed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Continue and wait for funding wallet balance?")
+        .default(true)
+        .interact()?;
+    if !proceed {
+        bail!("aborted by user");
+    }
+
+    loop {
+        let balance = rpc::get_balance(http, rpc_url, funding).await?;
+        if balance >= needed {
+            println!("Funding wallet balance is sufficient.");
+            return Ok(());
+        }
+
+        println!(
+            "Funding wallet balance: {} ETH (need {})",
+            wei_to_eth_string(balance),
+            wei_to_eth_string(needed)
+        );
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+pub async fn build_and_sign_bundle(
+    http: &Client,
+    rpc_url: &str,
+    chain_id: u64,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    needs_deauth: bool,
+    compromised_seed_value: U256,
+    compromised_signer: &PrivateKeySigner,
+    funding_signer: &PrivateKeySigner,
+    destination: Address,
+    planned: &[PlannedNameTx],
+) -> Result<Vec<String>> {
+    let compromised = compromised_signer.address();
+    let funding = funding_signer.address();
+
+    let funding_nonce = rpc::get_nonce(http, rpc_url, funding, "pending").await?;
+    let compromised_nonce = rpc::get_nonce(http, rpc_url, compromised, "pending").await?;
+
+    let funding_wallet = EthereumWallet::from(funding_signer.clone());
+    let compromised_wallet = EthereumWallet::from(compromised_signer.clone());
+
+    let mut txs = Vec::new();
+    let mut funding_next_nonce = funding_nonce;
+    let mut compromised_next_nonce = compromised_nonce;
+
+    if needs_deauth {
+        let auth = Authorization {
+            chain_id: U256::from(chain_id),
+            address: Address::ZERO,
+            nonce: compromised_nonce,
+        };
+        let sig = compromised_signer.sign_hash(&auth.signature_hash()).await?;
+        let signed_auth = auth.into_signed(sig);
+
+        let req = TransactionRequest::default()
+            .from(funding)
+            .to(compromised)
+            .nonce(funding_next_nonce)
+            .gas_limit(GAS_DEAUTH)
+            .max_fee_per_gas(max_fee_per_gas)
+            .max_priority_fee_per_gas(max_priority_fee_per_gas)
+            .value(U256::ZERO);
+
+        let mut req = req;
+        req.chain_id = Some(chain_id);
+        req.authorization_list = Some(vec![signed_auth]);
+
+        let raw = sign_request_to_hex(&funding_wallet, req).await?;
+        txs.push(raw);
+
+        funding_next_nonce += 1;
+        compromised_next_nonce += 1;
+    }
+
+    let seed_req = TransactionRequest::default()
+        .from(funding)
+        .to(compromised)
+        .nonce(funding_next_nonce)
+        .gas_limit(GAS_FUND_TRANSFER)
+        .max_fee_per_gas(max_fee_per_gas)
+        .max_priority_fee_per_gas(max_priority_fee_per_gas)
+        .value(compromised_seed_value);
+    let mut seed_req = seed_req;
+    seed_req.chain_id = Some(chain_id);
+    txs.push(sign_request_to_hex(&funding_wallet, seed_req).await?);
+
+    for item in planned {
+        let (to, data, gas) = match item.kind {
+            RecoveryKind::BaseRegistrar2ld { token_id } => {
+                let (to, data) =
+                    contracts::build_base_registrar_transfer(compromised, destination, token_id);
+                (to, data, GAS_BASE_REG_TRANSFER)
+            }
+            RecoveryKind::NameWrapper { node } => {
+                let (to, data) = contracts::build_wrapper_transfer(compromised, destination, node);
+                (to, data, GAS_WRAPPER_TRANSFER)
+            }
+            RecoveryKind::RegistryOwner { node } => {
+                let (to, data) = contracts::build_registry_set_owner(destination, node);
+                (to, data, GAS_REGISTRY_SET_OWNER)
+            }
+        };
+
+        let req = TransactionRequest::default()
+            .from(compromised)
+            .to(to)
+            .nonce(compromised_next_nonce)
+            .gas_limit(gas)
+            .max_fee_per_gas(max_fee_per_gas)
+            .max_priority_fee_per_gas(max_priority_fee_per_gas)
+            .value(U256::ZERO)
+            .input(data.into());
+        let mut req = req;
+        req.chain_id = Some(chain_id);
+
+        txs.push(sign_request_to_hex(&compromised_wallet, req).await?);
+        compromised_next_nonce += 1;
+    }
+
+    Ok(txs)
+}
+
+async fn sign_request_to_hex(wallet: &EthereumWallet, req: TransactionRequest) -> Result<String> {
+    let envelope = NetworkWallet::<Ethereum>::sign_request(wallet, req)
+        .await
+        .map_err(|e| anyhow!("failed to sign tx request: {e}"))?;
+
+    Ok(format!("0x{}", hex::encode(envelope.encoded_2718())))
+}
+
+pub async fn simulate_bundle(
+    http: &Client,
+    relay_url: &str,
+    funding_signer: &PrivateKeySigner,
+    txs: &[String],
+    target_block: u64,
+) -> Result<()> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_callBundle",
+        "params": [
+            {
+                "txs": txs,
+                "blockNumber": format!("0x{:x}", target_block),
+                "stateBlockNumber": "latest"
+            }
+        ]
+    })
+    .to_string();
+
+    let res = flashbots_request(http, relay_url, funding_signer, &body).await?;
+    if res.get("error").is_some() {
+        bail!("bundle simulation failed: {}", res);
+    }
+
+    Ok(())
+}
+
+pub async fn send_bundle(
+    http: &Client,
+    relay_url: &str,
+    funding_signer: &PrivateKeySigner,
+    txs: &[String],
+    target_block: u64,
+) -> Result<()> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_sendBundle",
+        "params": [
+            {
+                "txs": txs,
+                "blockNumber": format!("0x{:x}", target_block),
+            }
+        ]
+    })
+    .to_string();
+
+    let res = flashbots_request(http, relay_url, funding_signer, &body).await?;
+    if res.get("error").is_some() {
+        bail!("bundle send failed: {}", res);
+    }
+
+    println!("Bundle submitted for block {}", target_block);
+    Ok(())
+}
+
+async fn flashbots_request(
+    http: &Client,
+    relay_url: &str,
+    funding_signer: &PrivateKeySigner,
+    body: &str,
+) -> Result<Value> {
+    let body_hash = keccak256(body.as_bytes());
+    let signature = funding_signer
+        .sign_message(body_hash.as_slice())
+        .await
+        .context("failed to sign flashbots request")?;
+
+    let header = format!("{}:{}", funding_signer.address(), signature);
+
+    let res = http
+        .post(relay_url)
+        .header("Content-Type", "application/json")
+        .header("X-Flashbots-Signature", header)
+        .body(body.to_owned())
+        .send()
+        .await
+        .with_context(|| format!("flashbots relay request failed: {}", relay_url))?
+        .error_for_status()
+        .context("flashbots relay returned non-2xx")?
+        .json::<Value>()
+        .await
+        .context("failed to decode flashbots relay response")?;
+
+    Ok(res)
+}
+
+pub async fn bundle_included(http: &Client, rpc_url: &str, tx_hashes: &[String]) -> Result<bool> {
+    for tx_hash in tx_hashes {
+        let result =
+            rpc::rpc_call::<Value>(http, rpc_url, "eth_getTransactionReceipt", json!([tx_hash]))
+                .await?;
+
+        if !result.is_null() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
