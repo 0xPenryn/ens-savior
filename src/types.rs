@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, U256};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{DEFAULT_RELAY, DEFAULT_RPC};
+use crate::constants::{DEFAULT_RELAY, FLASHBOTS_RPC};
 
 #[derive(Debug, Parser)]
 #[command(name = "ens-savior")]
@@ -38,7 +38,7 @@ pub struct RecoverArgs {
     /// Address to refund leftover funding wallet ETH after recovery. Defaults to --destination if omitted.
     #[arg(long)]
     pub refund_address: Option<String>,
-    #[arg(long, default_value = DEFAULT_RPC)]
+    #[arg(long, default_value = FLASHBOTS_RPC)]
     pub rpc_url: String,
     #[arg(long, default_value = DEFAULT_RELAY)]
     pub relay_url: String,
@@ -65,12 +65,6 @@ pub struct SweepArgs {
     /// Address to receive the swept funds
     #[arg(long)]
     pub refund_address: String,
-    #[arg(long, default_value = DEFAULT_RPC)]
-    pub rpc_url: String,
-    #[arg(long, default_value = DEFAULT_RELAY)]
-    pub relay_url: String,
-    #[arg(long, default_value_t = 3)]
-    pub priority_fee_gwei: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

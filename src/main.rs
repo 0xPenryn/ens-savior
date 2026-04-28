@@ -18,7 +18,7 @@ use crate::{
         build_and_sign_bundle, bundle_included, estimate_required_funding, needs_eip7702_deauth,
         send_bundle, simulate_bundle, sweep_funding_wallet, wait_for_funding,
     },
-    constants::{BUILDER_NAMES, ENS_SUBGRAPH_FALLBACK_URL, ENS_SUBGRAPH_ID},
+    constants::{BUILDER_NAMES, ENS_SUBGRAPH_FALLBACK_URL, ENS_SUBGRAPH_ID, FLASHBOTS_RPC},
     ens::{discover_names, plan_name_recoveries, select_names},
     state::{
         load_or_create_session, load_session, parse_compromised_signer, persist_completed,
@@ -170,8 +170,7 @@ async fn recover_flow(http: &Client, args: RecoverArgs) -> Result<()> {
                 if let Some(refund) = refund_address {
                     sweep_funding_wallet(
                         http,
-                        &args.rpc_url,
-                        &args.relay_url,
+                        FLASHBOTS_RPC,
                         chain_id,
                         priority_fee,
                         &funding_signer,
@@ -252,13 +251,12 @@ async fn sweep_flow(http: &Client, args: SweepArgs) -> Result<()> {
     println!("Funding wallet: {}", funding_signer.address());
     println!("Refund address: {}", refund_address);
 
-    let chain_id = rpc::get_chain_id(http, &args.rpc_url).await?;
-    let priority_fee = gwei_to_wei(args.priority_fee_gwei);
+    let chain_id = rpc::get_chain_id(http, FLASHBOTS_RPC).await?;
+    let priority_fee = gwei_to_wei(1);
 
     sweep_funding_wallet(
         http,
-        &args.rpc_url,
-        &args.relay_url,
+        FLASHBOTS_RPC,
         chain_id,
         priority_fee,
         &funding_signer,

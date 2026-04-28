@@ -15,11 +15,11 @@ use serde_json::{Value, json};
 
 use crate::{
     constants::{
-        BUILDER_NAMES, GAS_BASE_REG_TRANSFER, GAS_DEAUTH, GAS_FUND_TRANSFER,
-        GAS_REGISTRY_SET_OWNER, GAS_WRAPPER_TRANSFER,
+        GAS_BASE_REG_TRANSFER, GAS_DEAUTH, GAS_FUND_TRANSFER, GAS_REGISTRY_SET_OWNER,
+        GAS_WRAPPER_TRANSFER,
     },
     contracts, rpc,
-    types::{FlashbotsBundle, PlannedNameTx, RecoveryKind},
+    types::{PlannedNameTx, RecoveryKind},
     utils::{hex_to_bytes, parse_u128_hex, wei_to_eth_string},
 };
 
@@ -370,7 +370,6 @@ pub async fn bundle_included(http: &Client, rpc_url: &str, tx_hashes: &[String])
 pub async fn sweep_funding_wallet(
     http: &Client,
     rpc_url: &str,
-    relay_url: &str,
     chain_id: u64,
     priority_fee: u128,
     funding_signer: &PrivateKeySigner,
@@ -379,80 +378,57 @@ pub async fn sweep_funding_wallet(
     let funding = funding_signer.address();
     let funding_wallet = EthereumWallet::from(funding_signer.clone());
 
-    let mut last_seen_block = 0u64;
-    let mut previous: Option<FlashbotsBundle> = None;
+    let block = rpc::get_block_by_number(http, rpc_url, "latest").await?;
+    let base_fee = parse_u128_hex(
+        block
+            .base_fee_per_gas
+            .as_deref()
+            .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?,
+    )?;
+    let gas_price = base_fee + priority_fee;
+    let gas_cost = U256::from(21_000u64) * U256::from(gas_price);
+
+    let balance = rpc::get_balance(http, rpc_url, funding).await?;
+    if balance <= gas_cost {
+        println!(
+            "Funding wallet balance ({} ETH) is at or below gas cost — nothing to sweep.",
+            wei_to_eth_string(balance)
+        );
+        return Ok(());
+    }
+
+    let sweep_value = balance - gas_cost;
+    println!(
+        "Sweeping {} ETH from funding wallet {} to {}",
+        wei_to_eth_string(sweep_value),
+        funding,
+        refund_address,
+    );
+
+    let nonce = rpc::get_nonce(http, rpc_url, funding, "pending").await?;
+
+    let req = TransactionRequest::default()
+        .from(funding)
+        .to(refund_address)
+        .nonce(nonce)
+        .gas_limit(21_000)
+        .gas_price(gas_price)
+        .value(sweep_value);
+    let mut req = req;
+    req.chain_id = Some(chain_id);
+
+    let raw = sign_request_to_hex(&funding_wallet, req).await?;
+    let tx_hash = rpc::send_raw_transaction(http, rpc_url, &raw).await?;
+    println!("Sweep tx: {}", tx_hash);
 
     loop {
-        let current_block = rpc::get_block_number(http, rpc_url).await?;
-        if current_block == last_seen_block {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            continue;
-        }
-        last_seen_block = current_block;
-
-        if let Some(ref bundle) = previous {
-            if bundle_included(http, rpc_url, &bundle.tx_hashes).await? {
-                println!("Sweep complete.");
-                return Ok(());
-            }
-        }
-
-        let block = rpc::get_block_by_number(http, rpc_url, "latest").await?;
-        let base_fee = parse_u128_hex(
-            block
-                .base_fee_per_gas
-                .as_deref()
-                .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?,
-        )?;
-        let gas_price = base_fee + priority_fee;
-        let gas_cost = U256::from(21_000u64) * U256::from(gas_price);
-
-        let balance = rpc::get_balance(http, rpc_url, funding).await?;
-        if balance <= gas_cost {
-            println!(
-                "Funding wallet balance ({} ETH) is at or below gas cost — nothing to sweep.",
-                wei_to_eth_string(balance)
-            );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let receipt =
+            rpc::rpc_call::<Value>(http, rpc_url, "eth_getTransactionReceipt", json!([tx_hash]))
+                .await?;
+        if !receipt.is_null() {
+            println!("Sweep complete.");
             return Ok(());
         }
-
-        let sweep_value = balance - gas_cost;
-        println!(
-            "Sweeping {} ETH from funding wallet {} to {}",
-            wei_to_eth_string(sweep_value),
-            funding,
-            refund_address,
-        );
-
-        let nonce = rpc::get_nonce(http, rpc_url, funding, "pending").await?;
-
-        let req = TransactionRequest::default()
-            .from(funding)
-            .to(refund_address)
-            .nonce(nonce)
-            .gas_limit(21_000)
-            .gas_price(gas_price)
-            .value(sweep_value);
-        let mut req = req;
-        req.chain_id = Some(chain_id);
-
-        let raw = sign_request_to_hex(&funding_wallet, req).await?;
-        let txs = vec![raw];
-
-        simulate_bundle(http, relay_url, funding_signer, &txs, current_block + 1).await?;
-        send_bundle(http, relay_url, BUILDER_NAMES, funding_signer, &txs, current_block + 1).await?;
-
-        let tx_hashes = txs
-            .iter()
-            .map(|tx| {
-                let bytes = hex_to_bytes(tx)?;
-                Ok(format!(
-                    "0x{}",
-                    alloy::primitives::hex::encode(alloy::primitives::keccak256(bytes))
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        previous = Some(FlashbotsBundle { tx_hashes });
     }
 }

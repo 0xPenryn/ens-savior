@@ -101,3 +101,9 @@ pub async fn get_code(http: &Client, rpc_url: &str, addr: Address) -> Result<Str
         .await
         .context("eth_getCode failed")
 }
+
+pub async fn send_raw_transaction(http: &Client, rpc_url: &str, raw_tx: &str) -> Result<String> {
+    rpc_call(http, rpc_url, "eth_sendRawTransaction", json!([raw_tx]))
+        .await
+        .context("eth_sendRawTransaction failed")
+}

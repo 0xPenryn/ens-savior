@@ -4,8 +4,8 @@ pub const ENS_BASE_REGISTRAR: Address = address!("57f1887a8BF19b14fC0dF6Fd9B2acc
 pub const ENS_NAME_WRAPPER: Address = address!("D4416b13d2b3a9aBae7AcD5D6C2BbDBE25686401");
 pub const ENS_REGISTRY: Address = address!("00000000000C2E074eC69A0dFb2997BA6C7d2e1e");
 
-pub const DEFAULT_RPC: &str = "https://ethereum.publicnode.com";
 pub const DEFAULT_RELAY: &str = "https://relay.flashbots.net";
+pub const FLASHBOTS_RPC: &str = "https://rpc.flashbots.net/fast";
 
 /// Builder names for eth_sendBundle multiplexing via relay.flashbots.net.
 /// Source: https://raw.githubusercontent.com/flashbots/dowg/main/builder-registrations.json
