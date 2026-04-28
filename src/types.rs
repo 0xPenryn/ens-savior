@@ -35,7 +35,7 @@ pub struct RecoverArgs {
     pub mnemonic_index: u32,
     #[arg(long)]
     pub destination: String,
-    /// Address to refund leftover funding wallet ETH after recovery. Defaults to --destination if omitted.
+    /// Address to refund leftover funding wallet ETH after recovery. If omitted, a warning is printed with the `sweep` command to run manually.
     #[arg(long)]
     pub refund_address: Option<String>,
     #[arg(long, default_value = FLASHBOTS_RPC)]

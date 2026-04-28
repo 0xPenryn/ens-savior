@@ -27,7 +27,7 @@ It is designed for situations where the compromised wallet is actively monitored
 ## Requirements
 
 - Rust toolchain (stable)
-- A Graph API key (free at [thegraph.com/studio/apikeys](https://thegraph.com/studio/apikeys/))
+- A Graph API key is recommended (free at [thegraph.com/studio/apikeys](https://thegraph.com/studio/apikeys/)); without one, the tool falls back to a rate-limited endpoint
 - Network access to an Ethereum RPC endpoint and the Flashbots relay
 
 ## Build
@@ -90,16 +90,16 @@ This is useful if you forgot `--refund-address` during recovery, or if a previou
 | `--mnemonic-index <N>` | BIP-44 derivation index when using `--compromised-mnemonic` | `0` |
 | `--destination <ADDRESS>` | Destination wallet address for recovered names | required |
 | `--refund-address <ADDRESS>` | Address to receive leftover funding wallet ETH after recovery | omit to skip sweep |
-| `--subgraph-api-key <KEY>` | The Graph API key — builds the ENS subgraph URL automatically | required (or use `--subgraph-url`) |
+| `--subgraph-api-key <KEY>` | The Graph API key — builds the ENS subgraph URL automatically | optional (or use `--subgraph-url`; omit both to use fallback) |
 | `--subgraph-url <URL>` | Full ENS subgraph URL (alternative to `--subgraph-api-key`) | — |
-| `--rpc-url <URL>` | Ethereum JSON-RPC endpoint | `https://ethereum.publicnode.com` |
+| `--rpc-url <URL>` | Ethereum JSON-RPC endpoint | `https://rpc.flashbots.net/fast` |
 | `--relay-url <URL>` | Flashbots relay URL for simulation and bundle submission | `https://relay.flashbots.net` |
 | `--state-path <PATH>` | Custom session state file path | see below |
 | `--priority-fee-gwei <N>` | Priority fee tip used in bundle transactions | `3` |
 | `--safety-buffer-pct <N>` | Gas funding safety buffer percentage | `15` |
 
 `--compromised-private-key` and `--compromised-mnemonic` are mutually exclusive; one must be provided.  
-`--subgraph-api-key` and `--subgraph-url` are mutually exclusive; one must be provided.
+`--subgraph-api-key` and `--subgraph-url` are mutually exclusive; if neither is provided, the tool falls back to the legacy hosted-service endpoint which is rate-limited and may be unreliable.
 
 ### sweep
 
@@ -107,9 +107,8 @@ This is useful if you forgot `--refund-address` during recovery, or if a previou
 |------|-------------|---------|
 | `--state-path <PATH>` | Path to the session state file | required |
 | `--refund-address <ADDRESS>` | Address to receive the swept funds | required |
-| `--rpc-url <URL>` | Ethereum JSON-RPC endpoint | `https://ethereum.publicnode.com` |
-| `--relay-url <URL>` | Flashbots relay URL | `https://relay.flashbots.net` |
-| `--priority-fee-gwei <N>` | Priority fee tip for the sweep transaction | `3` |
+
+The sweep always uses `https://rpc.flashbots.net/fast` and a 1 gwei tip; these are not configurable via flags.
 
 ## ENS Subgraph
 
@@ -119,7 +118,7 @@ Name discovery uses the ENS subgraph on The Graph Network (subgraph ID `5XqPmWe6
 
 Bundles are signed per the Flashbots authentication spec (EIP-191 personal sign of `keccak256(body)` as a hex string) and submitted as a single `eth_sendBundle` request to the Flashbots relay. The `builders` parameter is set to all builders registered in the [Flashbots DOWG builder registry](https://github.com/flashbots/dowg/blob/main/builder-registrations.json), so the relay multiplexes the bundle to every registered builder in one request.
 
-The funding wallet sweep is also submitted as a single-transaction Flashbots bundle, using the same relay infrastructure. It uses a legacy (type 0) transaction so that `gasPrice × 21,000` is known exactly at signing time and the entire balance can be drained cleanly.
+The funding wallet sweep is sent as a legacy (type 0) transaction via `eth_sendRawTransaction` to the Flashbots private RPC endpoint (`https://rpc.flashbots.net/fast`), which routes it through Flashbots builders without broadcasting to the public mempool. Using a legacy transaction means `gasPrice × 21,000` is known exactly at signing time and the entire balance can be drained cleanly.
 
 ## Session State
 
