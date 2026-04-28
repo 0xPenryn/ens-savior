@@ -4,9 +4,9 @@ use alloy::{
     primitives::{Address, hex},
     signers::local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English},
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
-use crate::types::{Args, SessionState};
+use crate::types::{RecoverArgs, SessionState};
 
 pub fn parse_signer_from_key(input: &str) -> Result<PrivateKeySigner> {
     let normalized = input.strip_prefix("0x").unwrap_or(input);
@@ -21,7 +21,7 @@ pub fn parse_signer_from_mnemonic(mnemonic: &str, index: u32) -> Result<PrivateK
         .build()?)
 }
 
-pub fn parse_compromised_signer(args: &Args) -> Result<PrivateKeySigner> {
+pub fn parse_compromised_signer(args: &RecoverArgs) -> Result<PrivateKeySigner> {
     match (&args.compromised_private_key, &args.compromised_mnemonic) {
         (Some(key), _) => parse_signer_from_key(key),
         (_, Some(phrase)) => parse_signer_from_mnemonic(phrase, args.mnemonic_index),
@@ -30,7 +30,7 @@ pub fn parse_compromised_signer(args: &Args) -> Result<PrivateKeySigner> {
 }
 
 pub fn resolve_state_path(
-    args: &Args,
+    args: &RecoverArgs,
     compromised: Address,
     destination: Address,
 ) -> Result<PathBuf> {
@@ -73,6 +73,12 @@ pub fn load_or_create_session(
     };
     fs::write(state_path, toml::to_string_pretty(&session)?)?;
     Ok((session, signer))
+}
+
+pub fn load_session(state_path: &PathBuf) -> Result<SessionState> {
+    let content = fs::read_to_string(state_path)
+        .with_context(|| format!("failed to read session file: {}", state_path.display()))?;
+    toml::from_str(&content).context("failed to parse session file")
 }
 
 pub fn persist_completed(state_path: &PathBuf, mut session: SessionState) -> Result<()> {
