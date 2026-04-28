@@ -22,11 +22,12 @@ It is designed for situations where the compromised wallet is actively monitored
 - Simulates the bundle via `eth_callBundle` and prints per-tx gas usage
 - Submits via `eth_sendBundle` to `relay.flashbots.net`, multiplexed across all registered builders
 - Re-submits per block until inclusion is detected
+- Optionally sweeps leftover ETH from the funding wallet to a refund address after recovery
 
 ## Requirements
 
 - Rust toolchain (stable)
-- A Graph API key (free at [thegraph.com/studio/apikeys](https://thegraph.com/studio/apikeys/))
+- A Graph API key is recommended (free at [thegraph.com/studio/apikeys](https://thegraph.com/studio/apikeys/)); without one, the tool falls back to a rate-limited endpoint
 - Network access to an Ethereum RPC endpoint and the Flashbots relay
 
 ## Build
@@ -43,37 +44,71 @@ Binary path:
 
 ## Usage
 
+### recover
+
+Recover ENS names from a compromised wallet:
+
 ```bash
-cargo run -- \
+cargo run -- recover \
   --compromised-private-key 0xYOUR_PRIVATE_KEY \
   --destination 0xDESTINATION_ADDRESS \
   --subgraph-api-key YOUR_GRAPH_API_KEY
 ```
 
-Or with a full custom subgraph URL:
+To automatically sweep leftover funding wallet ETH after recovery, add `--refund-address`:
 
 ```bash
-cargo run -- \
+cargo run -- recover \
   --compromised-private-key 0xYOUR_PRIVATE_KEY \
   --destination 0xDESTINATION_ADDRESS \
-  --subgraph-url https://gateway.thegraph.com/api/YOUR_KEY/subgraphs/id/5XqPmWe6gjyrJtFn9cLy237i4cWw2j9HcUJEXsP5qGtH
+  --subgraph-api-key YOUR_GRAPH_API_KEY \
+  --refund-address 0xREFUND_ADDRESS
 ```
+
+If `--refund-address` is omitted, recovery completes normally and a warning is printed with instructions for recovering the leftover ETH manually (see `sweep` below).
+
+### sweep
+
+Sweep remaining ETH from a previous session's funding wallet to a refund address:
+
+```bash
+cargo run -- sweep \
+  --state-path /path/to/session.toml \
+  --refund-address 0xREFUND_ADDRESS
+```
+
+This is useful if you forgot `--refund-address` during recovery, or if a previous run left funds behind. The session file contains the funding wallet private key and is printed at the start of every `recover` run.
 
 ## CLI Options
 
+### recover
+
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--compromised-private-key <HEX>` | Private key for the compromised wallet | required |
+| `--compromised-private-key <HEX>` | Private key for the compromised wallet | required (or use `--compromised-mnemonic`) |
+| `--compromised-mnemonic <PHRASE>` | Seed phrase for the compromised wallet | required (or use `--compromised-private-key`) |
+| `--mnemonic-index <N>` | BIP-44 derivation index when using `--compromised-mnemonic` | `0` |
 | `--destination <ADDRESS>` | Destination wallet address for recovered names | required |
-| `--subgraph-api-key <KEY>` | The Graph API key — builds the ENS subgraph URL automatically | required (or use `--subgraph-url`) |
+| `--refund-address <ADDRESS>` | Address to receive leftover funding wallet ETH after recovery | omit to skip sweep |
+| `--subgraph-api-key <KEY>` | The Graph API key — builds the ENS subgraph URL automatically | optional (or use `--subgraph-url`; omit both to use fallback) |
 | `--subgraph-url <URL>` | Full ENS subgraph URL (alternative to `--subgraph-api-key`) | — |
-| `--rpc-url <URL>` | Ethereum JSON-RPC endpoint | `https://ethereum.publicnode.com` |
+| `--rpc-url <URL>` | Ethereum JSON-RPC endpoint | `https://rpc.flashbots.net/fast` |
 | `--relay-url <URL>` | Flashbots relay URL for simulation and bundle submission | `https://relay.flashbots.net` |
 | `--state-path <PATH>` | Custom session state file path | see below |
 | `--priority-fee-gwei <N>` | Priority fee tip used in bundle transactions | `3` |
 | `--safety-buffer-pct <N>` | Gas funding safety buffer percentage | `15` |
 
-`--subgraph-api-key` and `--subgraph-url` are mutually exclusive; one must be provided.
+`--compromised-private-key` and `--compromised-mnemonic` are mutually exclusive; one must be provided.  
+`--subgraph-api-key` and `--subgraph-url` are mutually exclusive; if neither is provided, the tool falls back to the legacy hosted-service endpoint which is rate-limited and may be unreliable.
+
+### sweep
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--state-path <PATH>` | Path to the session state file | required |
+| `--refund-address <ADDRESS>` | Address to receive the swept funds | required |
+
+The sweep always uses `https://rpc.flashbots.net/fast` and a 1 gwei tip; these are not configurable via flags.
 
 ## ENS Subgraph
 
@@ -82,6 +117,8 @@ Name discovery uses the ENS subgraph on The Graph Network (subgraph ID `5XqPmWe6
 ## Bundle Submission
 
 Bundles are signed per the Flashbots authentication spec (EIP-191 personal sign of `keccak256(body)` as a hex string) and submitted as a single `eth_sendBundle` request to the Flashbots relay. The `builders` parameter is set to all builders registered in the [Flashbots DOWG builder registry](https://github.com/flashbots/dowg/blob/main/builder-registrations.json), so the relay multiplexes the bundle to every registered builder in one request.
+
+The funding wallet sweep is sent as a legacy (type 0) transaction via `eth_sendRawTransaction` to the Flashbots private RPC endpoint (`https://rpc.flashbots.net/fast`), which routes it through Flashbots builders without broadcasting to the public mempool. Using a legacy transaction means `gasPrice × 21,000` is known exactly at signing time and the entire balance can be drained cleanly.
 
 ## Session State
 
@@ -97,17 +134,18 @@ On macOS this is typically:
 ~/Library/Application Support/ens-savior/
 ```
 
-The state file contains the generated funding wallet private key and completion flag. If you re-run the tool with the same compromised/destination pair, the same funding wallet is reused.
+The state file contains the generated funding wallet private key and completion flag. If you re-run the tool with the same compromised/destination pair, the same funding wallet is reused. The path is printed at the start of every `recover` run and is required by the `sweep` command.
 
 ## Recovery Flow
 
-1. Run the tool with your compromised key, destination, and subgraph API key
-2. The tool prints compromised, destination, and funding wallet addresses
+1. Run `recover` with your compromised key, destination, and subgraph API key
+2. The tool prints compromised, destination, and funding wallet addresses, plus the session file path
 3. ENS names owned by the compromised wallet are discovered and presented for selection
 4. The tool estimates required funding and prompts to continue
 5. Fund the generated funding wallet with the displayed amount
 6. The tool simulates the bundle and prints per-tx gas usage, then submits to the Flashbots relay
 7. The bundle is re-submitted each block until inclusion is confirmed
+8. If `--refund-address` was provided, any leftover ETH in the funding wallet is swept automatically; otherwise a warning is printed with the `sweep` command to run manually
 
 ## Security Notes
 
