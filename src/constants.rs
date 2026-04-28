@@ -34,6 +34,11 @@ pub const BUILDER_NAMES: &[&str] = &[
 ];
 pub const ENS_SUBGRAPH_ID: &str = "5XqPmWe6gjyrJtFn9cLy237i4cWw2j9HcUJEXsP5qGtH";
 
+/// Legacy hosted-service endpoint — no API key required but heavily rate-limited and may be unreliable.
+/// Prefer --subgraph-api-key or --subgraph-url for production use.
+pub const ENS_SUBGRAPH_FALLBACK_URL: &str =
+    "https://api.thegraph.com/subgraphs/name/ensdomains/ens";
+
 pub const GAS_DEAUTH: u64 = 80_000;
 pub const GAS_FUND_TRANSFER: u64 = 21_000;
 pub const GAS_BASE_REG_TRANSFER: u64 = 120_000;

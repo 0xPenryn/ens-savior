@@ -18,7 +18,7 @@ use crate::{
         build_and_sign_bundle, bundle_included, estimate_required_funding, needs_eip7702_deauth,
         send_bundle, simulate_bundle, wait_for_funding,
     },
-    constants::{BUILDER_NAMES, ENS_SUBGRAPH_ID},
+    constants::{BUILDER_NAMES, ENS_SUBGRAPH_FALLBACK_URL, ENS_SUBGRAPH_ID},
     ens::{discover_names, plan_name_recoveries, select_names},
     state::{load_or_create_session, parse_compromised_signer, persist_completed, resolve_state_path},
     types::{Args, FlashbotsBundle},
@@ -40,9 +40,14 @@ async fn main() -> Result<()> {
         (None, Some(key)) => format!(
             "https://gateway.thegraph.com/api/{key}/subgraphs/id/{ENS_SUBGRAPH_ID}"
         ),
-        (None, None) => bail!(
-            "provide --subgraph-url <url> or --subgraph-api-key <key> (get a free key at https://thegraph.com/studio/apikeys/)"
-        ),
+        (None, None) => {
+            println!(
+                "Warning: no --subgraph-api-key or --subgraph-url provided. \
+                Falling back to the legacy hosted-service endpoint which is rate-limited and may be unreliable. \
+                Get a free API key at https://thegraph.com/studio/apikeys/"
+            );
+            ENS_SUBGRAPH_FALLBACK_URL.to_owned()
+        }
     };
 
     let state_path = resolve_state_path(&args, compromised_signer.address(), destination)?;

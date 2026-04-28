@@ -28,7 +28,8 @@ pub struct Args {
     /// Full subgraph URL. Mutually exclusive with --subgraph-api-key.
     #[arg(long, conflicts_with = "subgraph_api_key")]
     pub subgraph_url: Option<String>,
-    /// The Graph API key; used to build the ENS subgraph URL automatically.
+    /// The Graph API key (get one free at https://thegraph.com/studio/apikeys/). Mutually exclusive with --subgraph-url.
+    /// If omitted, falls back to the legacy hosted-service endpoint which is rate-limited and may be unreliable.
     #[arg(long, conflicts_with = "subgraph_url")]
     pub subgraph_api_key: Option<String>,
     #[arg(long)]
