@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use alloy::{
-    eips::{eip2718::Encodable2718, eip7702::Authorization},
-    network::{Ethereum, EthereumWallet, NetworkWallet},
+    eips::eip7702::Authorization,
+    network::EthereumWallet,
     primitives::{Address, U256, hex, keccak256},
     rpc::types::TransactionRequest,
     signers::{Signer, local::PrivateKeySigner},
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use reqwest::Client;
 use serde::Deserialize;
@@ -20,7 +20,7 @@ use crate::{
     },
     contracts, rpc,
     types::{PlannedNameTx, RecoveryKind},
-    utils::{hex_to_bytes, parse_u128_hex, wei_to_eth_string},
+    utils::{hex_to_bytes, wei_to_eth_string},
 };
 
 pub fn needs_eip7702_deauth(code: &str) -> bool {
@@ -146,7 +146,7 @@ pub async fn build_and_sign_bundle(
         req.chain_id = Some(chain_id);
         req.authorization_list = Some(vec![signed_auth]);
 
-        let raw = sign_request_to_hex(&funding_wallet, req).await?;
+        let raw = rpc::sign_request_to_hex(&funding_wallet, req).await?;
         txs.push(raw);
 
         funding_next_nonce += 1;
@@ -163,7 +163,7 @@ pub async fn build_and_sign_bundle(
         .value(compromised_seed_value);
     let mut seed_req = seed_req;
     seed_req.chain_id = Some(chain_id);
-    txs.push(sign_request_to_hex(&funding_wallet, seed_req).await?);
+    txs.push(rpc::sign_request_to_hex(&funding_wallet, seed_req).await?);
 
     for item in planned {
         let (to, data, gas) = match item.kind {
@@ -194,19 +194,11 @@ pub async fn build_and_sign_bundle(
         let mut req = req;
         req.chain_id = Some(chain_id);
 
-        txs.push(sign_request_to_hex(&compromised_wallet, req).await?);
+        txs.push(rpc::sign_request_to_hex(&compromised_wallet, req).await?);
         compromised_next_nonce += 1;
     }
 
     Ok(txs)
-}
-
-async fn sign_request_to_hex(wallet: &EthereumWallet, req: TransactionRequest) -> Result<String> {
-    let envelope = NetworkWallet::<Ethereum>::sign_request(wallet, req)
-        .await
-        .map_err(|e| anyhow!("failed to sign tx request: {e}"))?;
-
-    Ok(format!("0x{}", hex::encode(envelope.encoded_2718())))
 }
 
 #[derive(Deserialize)]
@@ -367,68 +359,3 @@ pub async fn bundle_included(http: &Client, rpc_url: &str, tx_hashes: &[String])
     Ok(false)
 }
 
-pub async fn sweep_funding_wallet(
-    http: &Client,
-    rpc_url: &str,
-    chain_id: u64,
-    priority_fee: u128,
-    funding_signer: &PrivateKeySigner,
-    refund_address: Address,
-) -> Result<()> {
-    let funding = funding_signer.address();
-    let funding_wallet = EthereumWallet::from(funding_signer.clone());
-
-    let block = rpc::get_block_by_number(http, rpc_url, "latest").await?;
-    let base_fee = parse_u128_hex(
-        block
-            .base_fee_per_gas
-            .as_deref()
-            .ok_or_else(|| anyhow!("latest block missing baseFeePerGas"))?,
-    )?;
-    let gas_price = base_fee + priority_fee;
-    let gas_cost = U256::from(21_000u64) * U256::from(gas_price);
-
-    let balance = rpc::get_balance(http, rpc_url, funding).await?;
-    if balance <= gas_cost {
-        println!(
-            "Funding wallet balance ({} ETH) is at or below gas cost — nothing to sweep.",
-            wei_to_eth_string(balance)
-        );
-        return Ok(());
-    }
-
-    let sweep_value = balance - gas_cost;
-    println!(
-        "Sweeping {} ETH from funding wallet {} to {}",
-        wei_to_eth_string(sweep_value),
-        funding,
-        refund_address,
-    );
-
-    let nonce = rpc::get_nonce(http, rpc_url, funding, "pending").await?;
-
-    let req = TransactionRequest::default()
-        .from(funding)
-        .to(refund_address)
-        .nonce(nonce)
-        .gas_limit(21_000)
-        .gas_price(gas_price)
-        .value(sweep_value);
-    let mut req = req;
-    req.chain_id = Some(chain_id);
-
-    let raw = sign_request_to_hex(&funding_wallet, req).await?;
-    let tx_hash = rpc::send_raw_transaction(http, rpc_url, &raw).await?;
-    println!("Sweep tx: {}", tx_hash);
-
-    loop {
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        let receipt =
-            rpc::rpc_call::<Value>(http, rpc_url, "eth_getTransactionReceipt", json!([tx_hash]))
-                .await?;
-        if !receipt.is_null() {
-            println!("Sweep complete.");
-            return Ok(());
-        }
-    }
-}

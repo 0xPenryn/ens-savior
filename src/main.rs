@@ -16,7 +16,7 @@ use reqwest::Client;
 use crate::{
     bundle::{
         build_and_sign_bundle, bundle_included, estimate_required_funding, needs_eip7702_deauth,
-        send_bundle, simulate_bundle, sweep_funding_wallet, wait_for_funding,
+        send_bundle, simulate_bundle, wait_for_funding,
     },
     constants::{BUILDER_NAMES, ENS_SUBGRAPH_FALLBACK_URL, ENS_SUBGRAPH_ID, FLASHBOTS_RPC},
     ens::{discover_names, plan_name_recoveries, select_names},
@@ -168,7 +168,7 @@ async fn recover_flow(http: &Client, args: RecoverArgs) -> Result<()> {
                 persist_completed(&state_path, session)?;
 
                 if let Some(refund) = refund_address {
-                    sweep_funding_wallet(
+                    rpc::sweep_funding_wallet(
                         http,
                         FLASHBOTS_RPC,
                         chain_id,
@@ -254,7 +254,7 @@ async fn sweep_flow(http: &Client, args: SweepArgs) -> Result<()> {
     let chain_id = rpc::get_chain_id(http, FLASHBOTS_RPC).await?;
     let priority_fee = gwei_to_wei(1);
 
-    sweep_funding_wallet(
+    rpc::sweep_funding_wallet(
         http,
         FLASHBOTS_RPC,
         chain_id,
