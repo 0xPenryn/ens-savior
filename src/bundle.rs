@@ -23,6 +23,23 @@ use crate::{
     utils::{hex_to_bytes, wei_to_eth_string},
 };
 
+pub struct BundleBuildContext<'a> {
+    pub http: &'a Client,
+    pub rpc_url: &'a str,
+    pub chain_id: u64,
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+    pub compromised_signer: &'a PrivateKeySigner,
+    pub funding_signer: &'a PrivateKeySigner,
+}
+
+pub struct BundlePlan<'a> {
+    pub needs_deauth: bool,
+    pub compromised_seed_value: U256,
+    pub destination: Address,
+    pub planned: &'a [PlannedNameTx],
+}
+
 pub fn needs_eip7702_deauth(code: &str) -> bool {
     let bytes = match hex_to_bytes(code) {
         Ok(v) => v,
@@ -99,38 +116,29 @@ pub async fn wait_for_funding(
 }
 
 pub async fn build_and_sign_bundle(
-    http: &Client,
-    rpc_url: &str,
-    chain_id: u64,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    needs_deauth: bool,
-    compromised_seed_value: U256,
-    compromised_signer: &PrivateKeySigner,
-    funding_signer: &PrivateKeySigner,
-    destination: Address,
-    planned: &[PlannedNameTx],
+    ctx: &BundleBuildContext<'_>,
+    plan: &BundlePlan<'_>,
 ) -> Result<Vec<String>> {
-    let compromised = compromised_signer.address();
-    let funding = funding_signer.address();
+    let compromised = ctx.compromised_signer.address();
+    let funding = ctx.funding_signer.address();
 
-    let funding_nonce = rpc::get_nonce(http, rpc_url, funding, "pending").await?;
-    let compromised_nonce = rpc::get_nonce(http, rpc_url, compromised, "pending").await?;
+    let funding_nonce = rpc::get_nonce(ctx.http, ctx.rpc_url, funding, "pending").await?;
+    let compromised_nonce = rpc::get_nonce(ctx.http, ctx.rpc_url, compromised, "pending").await?;
 
-    let funding_wallet = EthereumWallet::from(funding_signer.clone());
-    let compromised_wallet = EthereumWallet::from(compromised_signer.clone());
+    let funding_wallet = EthereumWallet::from(ctx.funding_signer.clone());
+    let compromised_wallet = EthereumWallet::from(ctx.compromised_signer.clone());
 
     let mut txs = Vec::new();
     let mut funding_next_nonce = funding_nonce;
     let mut compromised_next_nonce = compromised_nonce;
 
-    if needs_deauth {
+    if plan.needs_deauth {
         let auth = Authorization {
-            chain_id: U256::from(chain_id),
+            chain_id: U256::from(ctx.chain_id),
             address: Address::ZERO,
             nonce: compromised_nonce,
         };
-        let sig = compromised_signer.sign_hash(&auth.signature_hash()).await?;
+        let sig = ctx.compromised_signer.sign_hash(&auth.signature_hash()).await?;
         let signed_auth = auth.into_signed(sig);
 
         let req = TransactionRequest::default()
@@ -138,12 +146,12 @@ pub async fn build_and_sign_bundle(
             .to(compromised)
             .nonce(funding_next_nonce)
             .gas_limit(GAS_DEAUTH)
-            .max_fee_per_gas(max_fee_per_gas)
-            .max_priority_fee_per_gas(max_priority_fee_per_gas)
+            .max_fee_per_gas(ctx.max_fee_per_gas)
+            .max_priority_fee_per_gas(ctx.max_priority_fee_per_gas)
             .value(U256::ZERO);
 
         let mut req = req;
-        req.chain_id = Some(chain_id);
+        req.chain_id = Some(ctx.chain_id);
         req.authorization_list = Some(vec![signed_auth]);
 
         let raw = rpc::sign_request_to_hex(&funding_wallet, req).await?;
@@ -158,26 +166,27 @@ pub async fn build_and_sign_bundle(
         .to(compromised)
         .nonce(funding_next_nonce)
         .gas_limit(GAS_FUND_TRANSFER)
-        .max_fee_per_gas(max_fee_per_gas)
-        .max_priority_fee_per_gas(max_priority_fee_per_gas)
-        .value(compromised_seed_value);
+        .max_fee_per_gas(ctx.max_fee_per_gas)
+        .max_priority_fee_per_gas(ctx.max_priority_fee_per_gas)
+        .value(plan.compromised_seed_value);
     let mut seed_req = seed_req;
-    seed_req.chain_id = Some(chain_id);
+    seed_req.chain_id = Some(ctx.chain_id);
     txs.push(rpc::sign_request_to_hex(&funding_wallet, seed_req).await?);
 
-    for item in planned {
+    for item in plan.planned {
         let (to, data, gas) = match item.kind {
             RecoveryKind::BaseRegistrar2ld { token_id } => {
                 let (to, data) =
-                    contracts::build_base_registrar_transfer(compromised, destination, token_id);
+                    contracts::build_base_registrar_transfer(compromised, plan.destination, token_id);
                 (to, data, GAS_BASE_REG_TRANSFER)
             }
             RecoveryKind::NameWrapper { node } => {
-                let (to, data) = contracts::build_wrapper_transfer(compromised, destination, node);
+                let (to, data) =
+                    contracts::build_wrapper_transfer(compromised, plan.destination, node);
                 (to, data, GAS_WRAPPER_TRANSFER)
             }
             RecoveryKind::RegistryOwner { node } => {
-                let (to, data) = contracts::build_registry_set_owner(destination, node);
+                let (to, data) = contracts::build_registry_set_owner(plan.destination, node);
                 (to, data, GAS_REGISTRY_SET_OWNER)
             }
         };
@@ -187,12 +196,12 @@ pub async fn build_and_sign_bundle(
             .to(to)
             .nonce(compromised_next_nonce)
             .gas_limit(gas)
-            .max_fee_per_gas(max_fee_per_gas)
-            .max_priority_fee_per_gas(max_priority_fee_per_gas)
+            .max_fee_per_gas(ctx.max_fee_per_gas)
+            .max_priority_fee_per_gas(ctx.max_priority_fee_per_gas)
             .value(U256::ZERO)
             .input(data.into());
         let mut req = req;
-        req.chain_id = Some(chain_id);
+        req.chain_id = Some(ctx.chain_id);
 
         txs.push(rpc::sign_request_to_hex(&compromised_wallet, req).await?);
         compromised_next_nonce += 1;
@@ -358,4 +367,3 @@ pub async fn bundle_included(http: &Client, rpc_url: &str, tx_hashes: &[String])
 
     Ok(false)
 }
-

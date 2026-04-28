@@ -15,8 +15,9 @@ use reqwest::Client;
 
 use crate::{
     bundle::{
-        build_and_sign_bundle, bundle_included, estimate_required_funding, needs_eip7702_deauth,
-        send_bundle, simulate_bundle, wait_for_funding,
+        BundleBuildContext, BundlePlan, build_and_sign_bundle, bundle_included,
+        estimate_required_funding, needs_eip7702_deauth, send_bundle, simulate_bundle,
+        wait_for_funding,
     },
     constants::{BUILDER_NAMES, ENS_SUBGRAPH_FALLBACK_URL, ENS_SUBGRAPH_ID, FLASHBOTS_RPC},
     ens::{discover_names, plan_name_recoveries, select_names},
@@ -201,20 +202,23 @@ async fn recover_flow(http: &Client, args: RecoverArgs) -> Result<()> {
         let max_fee = base_fee_now.saturating_mul(2).saturating_add(priority_fee);
         let target_block = current_block + 1;
 
-        let txs = build_and_sign_bundle(
+        let bundle_ctx = BundleBuildContext {
             http,
-            &args.rpc_url,
+            rpc_url: &args.rpc_url,
             chain_id,
-            max_fee,
-            priority_fee,
+            max_fee_per_gas: max_fee,
+            max_priority_fee_per_gas: priority_fee,
+            compromised_signer: &compromised_signer,
+            funding_signer: &funding_signer,
+        };
+        let bundle_plan = BundlePlan {
             needs_deauth,
             compromised_seed_value,
-            &compromised_signer,
-            &funding_signer,
             destination,
-            &planned,
-        )
-        .await?;
+            planned: &planned,
+        };
+
+        let txs = build_and_sign_bundle(&bundle_ctx, &bundle_plan).await?;
 
         simulate_bundle(http, &args.relay_url, &funding_signer, &txs, target_block).await?;
         send_bundle(
