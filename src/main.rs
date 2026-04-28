@@ -20,7 +20,7 @@ use crate::{
     },
     constants::{BUILDER_NAMES, ENS_SUBGRAPH_ID},
     ens::{discover_names, plan_name_recoveries, select_names},
-    state::{load_or_create_session, parse_signer, persist_completed, resolve_state_path},
+    state::{load_or_create_session, parse_compromised_signer, persist_completed, resolve_state_path},
     types::{Args, FlashbotsBundle},
     utils::{gwei_to_wei, hex_to_bytes, parse_u128_hex, wei_to_eth_string},
 };
@@ -30,8 +30,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let http = Client::new();
 
-    let compromised_signer = parse_signer(&args.compromised_private_key)
-        .context("failed to parse compromised private key")?;
+    let compromised_signer = parse_compromised_signer(&args)
+        .context("failed to parse compromised wallet — provide --compromised-private-key or --compromised-mnemonic")?;
     let destination = alloy::primitives::Address::from_str(&args.destination)
         .with_context(|| format!("invalid destination address: {}", args.destination))?;
 

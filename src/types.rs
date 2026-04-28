@@ -10,8 +10,15 @@ use crate::constants::{DEFAULT_RELAY, DEFAULT_RPC};
 #[command(name = "ens-savior")]
 #[command(about = "Recover ENS names from a compromised wallet via private bundle submission")]
 pub struct Args {
-    #[arg(long)]
-    pub compromised_private_key: String,
+    /// Private key of the compromised wallet (hex). Mutually exclusive with --compromised-mnemonic.
+    #[arg(long, conflicts_with = "compromised_mnemonic")]
+    pub compromised_private_key: Option<String>,
+    /// Seed phrase of the compromised wallet. Mutually exclusive with --compromised-private-key.
+    #[arg(long, conflicts_with = "compromised_private_key")]
+    pub compromised_mnemonic: Option<String>,
+    /// BIP-44 derivation path index when using --compromised-mnemonic (default: 0).
+    #[arg(long, default_value_t = 0)]
+    pub mnemonic_index: u32,
     #[arg(long)]
     pub destination: String,
     #[arg(long, default_value = DEFAULT_RPC)]

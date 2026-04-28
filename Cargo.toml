@@ -13,8 +13,9 @@ readme = "README.md"
 rust-version = "1.85"
 
 [dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
 anyhow = "1.0"
-alloy = { version = "1.8.3", features = ["full", "ens"] }
+alloy = { version = "1.8.3", features = ["full", "ens", "signer-mnemonic"] }
 clap = { version = "4.5", features = ["derive"] }
 dialoguer = "0.11"
 dirs = "6.0"

@@ -2,16 +2,31 @@ use std::{fs, path::PathBuf, str::FromStr};
 
 use alloy::{
     primitives::{Address, hex},
-    signers::local::PrivateKeySigner,
+    signers::local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English},
 };
 use anyhow::{Result, anyhow, bail};
 
 use crate::types::{Args, SessionState};
 
-pub fn parse_signer(input: &str) -> Result<PrivateKeySigner> {
+pub fn parse_signer_from_key(input: &str) -> Result<PrivateKeySigner> {
     let normalized = input.strip_prefix("0x").unwrap_or(input);
     let with_prefix = format!("0x{}", normalized);
     Ok(PrivateKeySigner::from_str(&with_prefix)?)
+}
+
+pub fn parse_signer_from_mnemonic(mnemonic: &str, index: u32) -> Result<PrivateKeySigner> {
+    Ok(MnemonicBuilder::<English>::default()
+        .phrase(mnemonic)
+        .index(index)?
+        .build()?)
+}
+
+pub fn parse_compromised_signer(args: &Args) -> Result<PrivateKeySigner> {
+    match (&args.compromised_private_key, &args.compromised_mnemonic) {
+        (Some(key), _) => parse_signer_from_key(key),
+        (_, Some(phrase)) => parse_signer_from_mnemonic(phrase, args.mnemonic_index),
+        (None, None) => bail!("provide --compromised-private-key <hex> or --compromised-mnemonic <phrase>"),
+    }
 }
 
 pub fn resolve_state_path(
@@ -45,7 +60,7 @@ pub fn load_or_create_session(
             );
         }
 
-        let signer = parse_signer(&session.funding_private_key)?;
+        let signer = parse_signer_from_key(&session.funding_private_key)?;
         return Ok((session, signer));
     }
 
